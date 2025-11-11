@@ -6,16 +6,9 @@
 #include <ESPmDNS.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-
-// MQTT Configuration
-const char* mqtt_server = "192.168.1.100";  // Pas aan naar jouw MQTT broker IP
-const int mqtt_port = 1883;
-const char* mqtt_user = "";  // Laat leeg als geen authenticatie nodig is
-const char* mqtt_password = "";  // Laat leeg als geen authenticatie nodig is
-
-// Device configuration for Home Assistant
-const char* device_name = "Powerbaas";
-const char* device_id = "powerbaas_p1";
+#include <ArduinoOTA.h>
+#include <Update.h>
+#include "config.h"
 
 // MQTT Topics
 String mqtt_base_topic = "homeassistant/sensor/" + String(device_id);
@@ -29,44 +22,152 @@ MeterReading meterReading;
 WebServer server(80);
 
 unsigned long lastMqttPublish = 0;
-const unsigned long mqttPublishInterval = 10000; // Publiceer elke 10 seconden
 bool mqttDiscoverySent = false;
+
+// Forward declarations
+void setupWifi();
+void setupOTA();
+void setupMqtt();
+void setupPowerbaas();
+void setupWebserver();
+void setupWebOTA();
+void reconnectMqtt();
+void publishHomeAssistantDiscovery();
+void publishSensorData();
+String statusJson();
+bool checkWebAuth();
 
 void setup() {
   Serial.begin(115200);
+  delay(1000); // Give serial time to initialize
 
+  Serial.println("\n\nPowerbaas starting...");
+
+  // Initialize SPIFFS with auto-format if needed
+  Serial.println("Mounting SPIFFS...");
   if(!SPIFFS.begin(true)){
-    Serial.println("An Error has occurred while mounting SPIFFS");
-    ESP.restart();
+    Serial.println("SPIFFS mount failed, trying to format...");
+    if(!SPIFFS.format()) {
+      Serial.println("SPIFFS format failed!");
+      Serial.println("Continuing without SPIFFS...");
+    } else {
+      Serial.println("SPIFFS formatted successfully");
+      if(!SPIFFS.begin(true)) {
+        Serial.println("SPIFFS mount failed after format, continuing anyway...");
+      } else {
+        Serial.println("SPIFFS mounted successfully after format");
+      }
+    }
+  } else {
+    Serial.println("SPIFFS mounted successfully");
   }
 
   setupWifi();
+  setupOTA();
   setupMqtt();
   setupPowerbaas();
   setupWebserver();
+  setupWebOTA();
+
+  Serial.println("Setup complete!");
 }
 
 void setupWifi() {
   WiFi.mode(WIFI_STA);
-  WiFiManager wm;
 
-  bool res = wm.autoConnect("Powerbaas");
+  // Check if WiFi credentials are provided in config
+  if (strlen(wifi_ssid) > 0) {
+    // Direct WiFi connection
+    Serial.print("Connecting to WiFi: ");
+    Serial.println(wifi_ssid);
 
-  if(!res) {
-    Serial.println("Failed to connect");
-    ESP.restart();
-  }
-  else {
-    Serial.println("Connected...yeey :)");
+    WiFi.begin(wifi_ssid, wifi_password);
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("\nFailed to connect to WiFi. Falling back to WiFiManager...");
+      WiFiManager wm;
+      bool res = wm.autoConnect("Powerbaas");
+      if(!res) {
+        Serial.println("Failed to connect");
+        ESP.restart();
+      }
+    } else {
+      Serial.println("\nConnected to WiFi!");
+    }
+  } else {
+    // Use WiFiManager (captive portal)
+    Serial.println("No WiFi credentials in config. Starting WiFiManager...");
+    WiFiManager wm;
+    bool res = wm.autoConnect("Powerbaas");
+
+    if(!res) {
+      Serial.println("Failed to connect");
+      ESP.restart();
+    }
+    else {
+      Serial.println("Connected...yeey :)");
+    }
   }
 
   // Start mDNS
   Serial.println("");
-  if (MDNS.begin("powerbaas")) {
-    Serial.println("Connect to webserver: http://powerbaas.local");
+  if (MDNS.begin(wifi_hostname)) {
+    Serial.print("Connect to webserver: http://");
+    Serial.print(wifi_hostname);
+    Serial.println(".local");
   }
   Serial.print("Connect to webserver: http://");
   Serial.println(WiFi.localIP());
+}
+
+void setupOTA() {
+  ArduinoOTA.setHostname(wifi_hostname);
+  ArduinoOTA.setPassword(ota_password);
+
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else { // U_SPIFFS
+      type = "filesystem";
+    }
+    Serial.println("Start updating " + type);
+  });
+
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) {
+      Serial.println("Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      Serial.println("Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      Serial.println("Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      Serial.println("Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      Serial.println("End Failed");
+    }
+  });
+
+  ArduinoOTA.begin();
+  Serial.println("OTA Ready");
+  Serial.print("OTA Hostname: ");
+  Serial.println(wifi_hostname);
 }
 
 void setupPowerbaas() {
@@ -76,23 +177,100 @@ void setupPowerbaas() {
   powerbaas.setup();
 }
 
+bool checkWebAuth() {
+  if (!server.authenticate(web_username, web_password)) {
+    server.requestAuthentication();
+    return false;
+  }
+  return true;
+}
+
 void setupWebserver() {
 
-  // Handle index
+  // Handle index - protected
   server.on("/", []() {
+    if (!checkWebAuth()) return;
     server.send(200, "application/json", statusJson());
   });
 
-  // Reboot
+  // Reboot - protected
   server.on("/reboot", []() {
-    server.send(200, "text/html", "Reboot");
+    if (!checkWebAuth()) return;
+    server.send(200, "text/html", "Rebooting...");
+    delay(1000);
     ESP.restart();
+  });
+
+  // Public health check endpoint (no auth required)
+  server.on("/health", []() {
+    server.send(200, "text/plain", "OK");
   });
 
   server.begin();
 }
 
+void setupWebOTA() {
+  // OTA Update page - protected
+  server.on("/update", HTTP_GET, []() {
+    if (!checkWebAuth()) return;
+
+    String html = "<html><head><title>Powerbaas OTA Update</title>";
+    html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+    html += "<style>body{font-family:Arial;margin:20px;max-width:600px;}";
+    html += "h1{color:#333;}";
+    html += "form{margin:20px 0;}";
+    html += "input[type=file]{padding:10px;width:100%;}";
+    html += "input[type=submit]{background:#4CAF50;color:white;padding:10px 20px;border:none;cursor:pointer;width:100%;margin-top:10px;}";
+    html += "input[type=submit]:hover{background:#45a049;}";
+    html += ".info{background:#e7f3fe;border-left:4px solid #2196F3;padding:10px;margin:10px 0;}";
+    html += "</style></head><body>";
+    html += "<h1>Powerbaas OTA Update</h1>";
+    html += "<div class='info'><strong>Info:</strong> Upload new firmware (.bin file). Device will reboot after update.</div>";
+    html += "<form method='POST' action='/update' enctype='multipart/form-data'>";
+    html += "<input type='file' name='update' accept='.bin' required><br>";
+    html += "<input type='submit' value='Update Firmware'>";
+    html += "</form>";
+    html += "<br><a href='/'>Back to Home</a>";
+    html += "</body></html>";
+    server.send(200, "text/html", html);
+  });
+
+  // Handle firmware upload - protected
+  server.on("/update", HTTP_POST, []() {
+    if (!checkWebAuth()) return;
+
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/html", (Update.hasError()) ?
+      "<html><body><h1>Update Failed</h1><p>Please try again.</p><a href='/update'>Back</a></body></html>" :
+      "<html><body><h1>Update Success!</h1><p>Device rebooting...</p></body></html>");
+    delay(1000);
+    ESP.restart();
+  }, []() {
+    if (!server.authenticate(web_username, web_password)) {
+      return;
+    }
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      Serial.printf("Update: %s\n", upload.filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) {
+        Serial.printf("Update Success: %u bytes\n", upload.totalSize);
+      } else {
+        Update.printError(Serial);
+      }
+    }
+  });
+}
+
 void loop() {
+  ArduinoOTA.handle();
   powerbaas.receive();
   server.handleClient();
 

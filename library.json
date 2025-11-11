@@ -1,0 +1,34 @@
+{
+  "name": "Powerbaas",
+  "version": "1.3.13",
+  "description": "Arduino library for Powerbaas Smart Meter P1 Shield - Read power usage and meter readings from your smart meter",
+  "keywords": ["smart-meter", "p1", "energy", "power", "esp32", "dsmr", "home-automation"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/XiloXL/Powerbaas.git"
+  },
+  "authors": [
+    {
+      "name": "XiloXL",
+      "email": "info@powerbaas.nl",
+      "maintainer": true
+    },
+    {
+      "name": "roed",
+      "email": "contact@toothpasteandbubblegum.com",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "homepage": "https://www.powerbaas.nl",
+  "frameworks": ["arduino", "espidf"],
+  "platforms": ["espressif32"],
+  "export": {
+    "exclude": [
+      ".git",
+      ".gitignore",
+      ".pio",
+      ".vscode"
+    ]
+  }
+}
