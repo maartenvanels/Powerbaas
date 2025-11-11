@@ -8,6 +8,7 @@
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
 #include <Update.h>
+#include <LittleFS.h>
 #include "config.h"
 
 // MQTT Topics
@@ -43,23 +44,23 @@ void setup() {
 
   Serial.println("\n\nPowerbaas starting...");
 
-  // Initialize SPIFFS with auto-format if needed
-  Serial.println("Mounting SPIFFS...");
-  if(!SPIFFS.begin(true)){
-    Serial.println("SPIFFS mount failed, trying to format...");
-    if(!SPIFFS.format()) {
-      Serial.println("SPIFFS format failed!");
-      Serial.println("Continuing without SPIFFS...");
+  // Initialize LittleFS with auto-format if needed
+  Serial.println("Mounting LittleFS...");
+  if(!LittleFS.begin(true)){
+    Serial.println("LittleFS mount failed, trying to format...");
+    if(!LittleFS.format()) {
+      Serial.println("LittleFS format failed!");
+      Serial.println("Continuing without LittleFS...");
     } else {
-      Serial.println("SPIFFS formatted successfully");
-      if(!SPIFFS.begin(true)) {
-        Serial.println("SPIFFS mount failed after format, continuing anyway...");
+      Serial.println("LittleFS formatted successfully");
+      if(!LittleFS.begin(true)) {
+        Serial.println("LittleFS mount failed after format, continuing anyway...");
       } else {
-        Serial.println("SPIFFS mounted successfully after format");
+        Serial.println("LittleFS mounted successfully after format");
       }
     }
   } else {
-    Serial.println("SPIFFS mounted successfully");
+    Serial.println("LittleFS mounted successfully");
   }
 
   setupWifi();
